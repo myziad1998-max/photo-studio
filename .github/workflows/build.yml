@@ -1,1 +1,28 @@
 
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install PySide6 Pillow pyinstaller
+
+      - name: Build EXE
+        run: pyinstaller --noconfirm --clean --onefile --windowed --name PhotoStudio photo_studio.py
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoStudio-exe
+          path: dist/PhotoStudio.exe
