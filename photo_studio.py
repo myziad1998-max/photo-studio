@@ -16,7 +16,7 @@ from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QFont, QPageS
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDialog, QFrame, QLabel, QPushButton, QVBoxLayout,
     QHBoxLayout, QGridLayout, QGroupBox, QScrollArea, QSlider, QSpinBox, QDoubleSpinBox,
-    QComboBox, QCheckBox, QRadioButton, QFileDialog, QMessageBox, QColorDialog,
+    QComboBox, QCheckBox, QRadioButton, QLineEdit, QFileDialog, QMessageBox, QColorDialog,
     QGraphicsView, QGraphicsScene, QAbstractSpinBox, QButtonGroup,
 )
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog
@@ -70,6 +70,7 @@ def pil_to_qpixmap(img: Image.Image) -> QPixmap:
 
 def make_button(text, name=None, slot=None):
     b = QPushButton(text)
+    b.setMinimumWidth(0)
     if name:
         b.setObjectName(name)
     if slot:
@@ -401,7 +402,9 @@ class ItemCard(QFrame):
         self.thumb = QLabel()
         self.thumb.setFixedSize(76, 100)
         self.thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        name = QLabel(item.name)
+        name = QLabel(self.fontMetrics().elidedText(item.name, Qt.TextElideMode.ElideMiddle, 300))
+        name.setToolTip(item.name)
+        name.setMinimumWidth(0)
         name.setStyleSheet("color:#89b4fa;font-weight:bold")
 
         self.sp_w = plus_minus(QDoubleSpinBox())
@@ -414,6 +417,12 @@ class ItemCard(QFrame):
         self.sp_n = plus_minus(QSpinBox())
         self.sp_n.setRange(1, 300)
         self.sp_n.setValue(item.copies)
+        self.ed_name = QLineEdit(item.name_text)
+        self.ed_name.setPlaceholderText("الاسم")
+        self.ed_id = QLineEdit(item.id_text)
+        self.ed_id.setPlaceholderText("الرقم القومي")
+        self.ed_name.textChanged.connect(self._text)
+        self.ed_id.textChanged.connect(self._text)
         self.sp_w.valueChanged.connect(self._edited)
         self.sp_h.valueChanged.connect(self._edited)
         self.sp_n.valueChanged.connect(self._edited)
@@ -425,6 +434,10 @@ class ItemCard(QFrame):
         form.addWidget(self.sp_h, 1, 1)
         form.addWidget(QLabel("عدد النسخ:"), 2, 0)
         form.addWidget(self.sp_n, 2, 1)
+        form.addWidget(QLabel("الاسم:"), 3, 0)
+        form.addWidget(self.ed_name, 3, 1)
+        form.addWidget(QLabel("الرقم القومي:"), 4, 0)
+        form.addWidget(self.ed_id, 4, 1)
         top = QHBoxLayout()
         top.addLayout(form, 1)
         top.addWidget(self.thumb)
@@ -451,6 +464,11 @@ class ItemCard(QFrame):
     def _edited(self):
         self.item.w, self.item.h = self.sp_w.value(), self.sp_h.value()
         self.item.copies = self.sp_n.value()
+        self.changed.emit()
+
+    def _text(self):
+        self.item.name_text = self.ed_name.text()
+        self.item.id_text = self.ed_id.text()
         self.changed.emit()
 
     def _done(self, img):
@@ -578,6 +596,15 @@ class MainWindow(QMainWindow):
         self.sp_mm.setValue(self.s.line_mm)
         self.sp_mm.valueChanged.connect(self.settings_changed)
         self.btn_color = make_button("لون الخط", slot=self.pick_line_color)
+        self.sp_cap = plus_minus(QDoubleSpinBox())
+        self.sp_cap.setRange(4.0, 24.0)
+        self.sp_cap.setSingleStep(0.5)
+        self.sp_cap.setDecimals(1)
+        self.sp_cap.setValue(self.s.caption_pt)
+        self.sp_cap.valueChanged.connect(self.settings_changed)
+        self.chk_bold = QCheckBox("خط عريض للاسم والرقم")
+        self.chk_bold.setChecked(self.s.caption_bold)
+        self.chk_bold.toggled.connect(self.settings_changed)
         f2 = QGridLayout(g2)
         f2.addWidget(QLabel("المسافة الأفقية (سم):"), 0, 0)
         f2.addWidget(self.sp_gx, 0, 1)
@@ -588,6 +615,9 @@ class MainWindow(QMainWindow):
         f2.addWidget(QLabel("سماكة الخط (مم):"), 3, 0)
         f2.addWidget(self.sp_mm, 3, 1)
         f2.addWidget(self.btn_color, 4, 0, 1, 2)
+        f2.addWidget(QLabel("حجم خط الاسم والرقم (نقطة):"), 5, 0)
+        f2.addWidget(self.sp_cap, 5, 1)
+        f2.addWidget(self.chk_bold, 6, 0, 1, 2)
 
         prj = QHBoxLayout()
         prj.addWidget(make_button("💾 حفظ المشروع", slot=self.save_project))
@@ -616,7 +646,8 @@ class MainWindow(QMainWindow):
         panel_scroll = QScrollArea()
         panel_scroll.setWidgetResizable(True)
         panel_scroll.setWidget(panel)
-        panel_scroll.setFixedWidth(410)
+        panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        panel_scroll.setFixedWidth(450)
 
         # ---- الشريط السفلي
         bottom = QHBoxLayout()
@@ -642,6 +673,8 @@ class MainWindow(QMainWindow):
         s.line_style = "full" if self.cmb_style.currentIndex() == 0 else "corners"
         s.line_mm = self.sp_mm.value()
         s.sequential = self.rb_seq.isChecked()
+        s.caption_pt = self.sp_cap.value()
+        s.caption_bold = self.chk_bold.isChecked()
         self.schedule()
 
     def paper_changed(self, name):
@@ -802,6 +835,7 @@ class MainWindow(QMainWindow):
             it.current.save(cur)
             it.original.save(ori)
             data["items"].append({"name": it.name, "w": it.w, "h": it.h, "copies": it.copies,
+                                  "name_text": it.name_text, "id_text": it.id_text,
                                   "current": os.path.relpath(cur, base),
                                   "original": os.path.relpath(ori, base)})
         with open(path, "w", encoding="utf-8") as f:
@@ -826,7 +860,8 @@ class MainWindow(QMainWindow):
             for d in data["items"]:
                 cur = Image.open(os.path.join(base, d["current"])).convert("RGB")
                 ori = Image.open(os.path.join(base, d["original"])).convert("RGB")
-                self.add_item(pc.PhotoItem(d["name"], ori, cur, d["w"], d["h"], d["copies"]))
+                self.add_item(pc.PhotoItem(d["name"], ori, cur, d["w"], d["h"], d["copies"],
+                                           d.get("name_text", ""), d.get("id_text", "")))
             self._sync_controls()
             self.fit_page()
         except Exception as e:
@@ -835,7 +870,7 @@ class MainWindow(QMainWindow):
     def _sync_controls(self):
         s = self.s
         widgets = (self.sp_gx, self.sp_gy, self.chk_lines, self.cmb_style, self.sp_mm,
-                   self.rb_seq, self.rb_land, self.cmb_paper)
+                   self.rb_seq, self.rb_land, self.cmb_paper, self.sp_cap, self.chk_bold)
         for w in widgets:
             w.blockSignals(True)
         self.sp_gx.setValue(s.gap_x)
@@ -843,6 +878,8 @@ class MainWindow(QMainWindow):
         self.chk_lines.setChecked(s.show_lines)
         self.cmb_style.setCurrentIndex(0 if s.line_style == "full" else 1)
         self.sp_mm.setValue(s.line_mm)
+        self.sp_cap.setValue(s.caption_pt)
+        self.chk_bold.setChecked(s.caption_bold)
         self.rb_seq.setChecked(s.sequential)
         self.rb_group.setChecked(not s.sequential)
         self.rb_land.setChecked(s.landscape)
