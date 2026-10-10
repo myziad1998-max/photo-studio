@@ -1,9 +1,8 @@
-
 name: Build Windows EXE
 
 on:
-  workflow_dispatch:
-  push:
+  workflow_dispatch:   # يسمح بالتشغيل اليدوي من زر Run workflow
+  push:                # ويعمل تلقائيًا عند رفع أي تعديل
 
 jobs:
   build:
@@ -16,10 +15,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install PySide6 Pillow pyinstaller
+        run: pip install PySide6 Pillow pyinstaller arabic-reshaper python-bidi
 
       - name: Build EXE
-        run: pyinstaller --noconfirm --clean --onefile --windowed --name PhotoStudio photo_studio.py
+        run: pyinstaller --noconfirm --clean --onefile --windowed --collect-all arabic_reshaper --collect-all bidi --name PhotoStudio photo_studio.py
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
