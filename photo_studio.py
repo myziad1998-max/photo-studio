@@ -602,6 +602,9 @@ class MainWindow(QMainWindow):
         self.sp_cap.setDecimals(1)
         self.sp_cap.setValue(self.s.caption_pt)
         self.sp_cap.valueChanged.connect(self.settings_changed)
+        self.chk_inside = QCheckBox("كتابة الاسم والرقم داخل الصورة")
+        self.chk_inside.setChecked(self.s.caption_inside)
+        self.chk_inside.toggled.connect(self.settings_changed)
         self.chk_bold = QCheckBox("خط عريض للاسم والرقم")
         self.chk_bold.setChecked(self.s.caption_bold)
         self.chk_bold.toggled.connect(self.settings_changed)
@@ -618,6 +621,7 @@ class MainWindow(QMainWindow):
         f2.addWidget(QLabel("حجم خط الاسم والرقم (نقطة):"), 5, 0)
         f2.addWidget(self.sp_cap, 5, 1)
         f2.addWidget(self.chk_bold, 6, 0, 1, 2)
+        f2.addWidget(self.chk_inside, 7, 0, 1, 2)
 
         prj = QHBoxLayout()
         prj.addWidget(make_button("💾 حفظ المشروع", slot=self.save_project))
@@ -675,6 +679,7 @@ class MainWindow(QMainWindow):
         s.sequential = self.rb_seq.isChecked()
         s.caption_pt = self.sp_cap.value()
         s.caption_bold = self.chk_bold.isChecked()
+        s.caption_inside = self.chk_inside.isChecked()
         self.schedule()
 
     def paper_changed(self, name):
@@ -870,7 +875,7 @@ class MainWindow(QMainWindow):
     def _sync_controls(self):
         s = self.s
         widgets = (self.sp_gx, self.sp_gy, self.chk_lines, self.cmb_style, self.sp_mm,
-                   self.rb_seq, self.rb_land, self.cmb_paper, self.sp_cap, self.chk_bold)
+                   self.rb_seq, self.rb_land, self.cmb_paper, self.sp_cap, self.chk_bold, self.chk_inside)
         for w in widgets:
             w.blockSignals(True)
         self.sp_gx.setValue(s.gap_x)
@@ -880,6 +885,7 @@ class MainWindow(QMainWindow):
         self.sp_mm.setValue(s.line_mm)
         self.sp_cap.setValue(s.caption_pt)
         self.chk_bold.setChecked(s.caption_bold)
+        self.chk_inside.setChecked(s.caption_inside)
         self.rb_seq.setChecked(s.sequential)
         self.rb_group.setChecked(not s.sequential)
         self.rb_land.setChecked(s.landscape)

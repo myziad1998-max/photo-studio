@@ -63,6 +63,7 @@ class Settings:
     sequential: bool = False          # False: تجميع نسخ كل صورة | True: توزيع بالتتابع
     caption_pt: float = 7.0           # حجم خط النص تحت الصورة (نقطة)
     caption_bold: bool = True
+    caption_inside: bool = True       # True: النص داخل إطار الصورة | False: أسفل الصورة
 
     def page_size(self):
         return (self.paper_h, self.paper_w) if self.landscape else (self.paper_w, self.paper_h)
@@ -76,6 +77,8 @@ def caption_lines(it) -> list:
 def caption_extra(it, s: "Settings") -> float:
     """الارتفاع (سم) الذي يحجزه النص أسفل الصورة."""
     n = len(caption_lines(it))
+    if s.caption_inside:
+        return 0.0
     return n * s.caption_pt * 1.3 / 72 * 2.54 + 0.12 if n else 0.0
 
 
@@ -186,8 +189,14 @@ def _draw_caption(d, it, s: Settings, dpi, px, py, W, H, t):
     if not lines:
         return
     base = max(6, int(round(s.caption_pt / 72 * dpi)))
-    y = py + H + t + max(1, int(0.03 / 2.54 * dpi))
     cx = px + W / 2
+    if s.caption_inside:
+        pad = max(2, int(0.04 / 2.54 * dpi))
+        band = min(int(len(lines) * base * 1.3) + 2 * pad, int(H * 0.4))
+        d.rectangle([px, py + H - band, px + W - 1, py + H - 1], fill=(255, 255, 255))
+        y = py + H - band + pad
+    else:
+        y = py + H + t + max(1, int(0.03 / 2.54 * dpi))
     for line in lines:
         text, size = shape(line), base
         font = get_font(size, s.caption_bold)
