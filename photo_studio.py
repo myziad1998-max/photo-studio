@@ -11,17 +11,19 @@ import json
 from dataclasses import asdict
 
 from PIL import Image
-from PySide6.QtCore import Qt, QTimer, Signal, QRectF, QPointF, QSizeF, QMarginsF
-from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QFont, QPageSize, QPageLayout
+from PySide6.QtCore import Qt, QTimer, Signal, QRectF, QPointF, QSizeF, QMarginsF, QThread, QSettings
+from PySide6.QtGui import (QPixmap, QImage, QPainter, QColor, QPen, QFont, QPageSize,
+                           QPageLayout, QIcon, QAction)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDialog, QFrame, QLabel, QPushButton, QVBoxLayout,
     QHBoxLayout, QGridLayout, QGroupBox, QScrollArea, QSlider, QSpinBox, QDoubleSpinBox,
     QComboBox, QCheckBox, QRadioButton, QLineEdit, QFileDialog, QMessageBox, QColorDialog,
-    QGraphicsView, QGraphicsScene, QAbstractSpinBox, QButtonGroup,
+    QGraphicsView, QGraphicsScene, QAbstractSpinBox, QButtonGroup, QSplashScreen, QDockWidget, QProgressBar,
 )
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 
 import photo_core as pc
+import photo_ai as ai
 
 # ======================================================================= الأنماط
 DARK = """
@@ -61,6 +63,12 @@ QFrame#card{background:white;border:1px solid #c5c8d8;border-radius:8px}
 
 
 # ======================================================================= أدوات
+def resource(name: str) -> str:
+    """مسار ملف مرفق (يعمل من الكود المباشر ومن داخل ملف EXE)."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
 def pil_to_qpixmap(img: Image.Image) -> QPixmap:
     img = img.convert("RGB")
     data = img.tobytes("raw", "RGB")
@@ -389,6 +397,155 @@ class BackgroundDialog(QDialog):
         self.accept()
 
 
+# ======================================================================= التحسين الاحترافي (ذكاء اصطناعي)
+class Worker(QThread):
+    done = Signal(object, object)          # (صورة أو None, ملاحظات)
+
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def run(self):
+        try:
+            img, notes = self.fn()
+            self.done.emit(img, notes)
+        except Exception as e:             # لا نترك البرنامج ينهار
+            self.done.emit(None, [f"حدث خطأ أثناء المعالجة: {e}"])
+
+
+class ProDialog(QDialog):
+    def __init__(self, item: pc.PhotoItem, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("✨ تحسين احترافي بالذكاء الاصطناعي")
+        self.resize(1000, 720)
+        self.item, self.result_img, self.worker = item, None, None
+
+        def chk(text, on=True):
+            c = QCheckBox(text)
+            c.setChecked(on)
+            return c
+
+        self.c_crop = chk("قص تلقائي بالمقاس مع توسيط الوجه")
+        self.sl_zoom = make_slider(20, 36, 26)
+        self.lbl_zoom = QLabel("حجم الرأس: متوسط")
+        self.sl_zoom.valueChanged.connect(
+            lambda v: self.lbl_zoom.setText("حجم الرأس: " + ("كبير" if v < 24 else "متوسط" if v < 30 else "صغير (كتفان أكثر)")))
+        self.c_light = chk("ضبط الإضاءة تلقائياً")
+        self.c_hd = chk("تحسين الجودة إلى HD (دقة طباعة 600 DPI)")
+        self.c_blem = chk("إزالة حبوب الوجه")
+        self.c_bg = chk("إزالة الخلفية بالذكاء الاصطناعي")
+        self.cmb_bg = QComboBox()
+        self.cmb_bg.addItems(pc.BACKGROUNDS.keys())
+        self.c_clo = chk("تغيير الملابس إلى ملابس رسمية", False)
+        self.cmb_gender = QComboBox()
+        self.cmb_gender.addItems(["رجال", "سيدات"])
+        self.cmb_style, self.cmb_jacket = QComboBox(), QComboBox()
+        self.cmb_shirt, self.cmb_tie = QComboBox(), QComboBox()
+        self.cmb_jacket.addItems(ai.JACKET_COLORS.keys())
+        self.cmb_shirt.addItems(ai.SHIRT_COLORS.keys())
+        self.cmb_tie.addItems(ai.TIE_COLORS.keys())
+        self.cmb_gender.currentIndexChanged.connect(self._fill_styles)
+        self.cmb_style.currentIndexChanged.connect(self._tie_enabled)
+        self._fill_styles()
+
+        form = QVBoxLayout()
+        for w in (self.c_crop, self.lbl_zoom, self.sl_zoom, self.c_light, self.c_hd, self.c_blem, self.c_bg, self.cmb_bg):
+            form.addWidget(w)
+        form.addWidget(self.c_clo)
+        grid = QGridLayout()
+        for r, (t, w) in enumerate((("النوع:", self.cmb_gender), ("القالب:", self.cmb_style),
+                                    ("لون البدلة:", self.cmb_jacket), ("لون القميص:", self.cmb_shirt),
+                                    ("لون الكرافتة:", self.cmb_tie))):
+            grid.addWidget(QLabel(t), r, 0)
+            grid.addWidget(w, r, 1)
+        form.addLayout(grid)
+        self.lbl_note = QLabel("")
+        self.lbl_note.setWordWrap(True)
+        self.lbl_note.setStyleSheet("color:#f9a825")
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 0)
+        self.bar.hide()
+        self.btn_prev = make_button("👁️ معاينة", slot=self.preview)
+        self.btn_ok = make_button("✅ تطبيق على الصورة", "green", self.apply)
+        self.btn_cancel = make_button("إلغاء", slot=self.reject)
+        form.addWidget(self.lbl_note)
+        form.addStretch(1)
+        form.addWidget(self.bar)
+        form.addWidget(self.btn_prev)
+        form.addWidget(self.btn_ok)
+        form.addWidget(self.btn_cancel)
+
+        self.lbl_before, self.lbl_after = QLabel(), QLabel()
+        for lb, t in ((self.lbl_before, "قبل"), (self.lbl_after, "بعد (اضغط معاينة)")):
+            lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lb.setMinimumSize(300, 420)
+            lb.setText(t)
+        pm = pil_to_qpixmap(item.current)
+        self.lbl_before.setPixmap(pm.scaled(330, 520, Qt.AspectRatioMode.KeepAspectRatio,
+                                            Qt.TransformationMode.SmoothTransformation))
+        pics = QHBoxLayout()
+        pics.addWidget(self.lbl_before)
+        pics.addWidget(self.lbl_after)
+        root = QHBoxLayout(self)
+        root.addLayout(form, 2)
+        root.addLayout(pics, 5)
+
+    def _fill_styles(self):
+        self.cmb_style.clear()
+        self.cmb_style.addItems((ai.MEN_STYLES if self.cmb_gender.currentIndex() == 0 else ai.WOMEN_STYLES).keys())
+        self.cmb_jacket.setCurrentText("كحلي" if self.cmb_gender.currentIndex() == 0 else "عنابي")
+        self._tie_enabled()
+
+    def _tie_enabled(self):
+        st = (ai.MEN_STYLES if self.cmb_gender.currentIndex() == 0 else ai.WOMEN_STYLES).get(self.cmb_style.currentText(), "")
+        self.cmb_tie.setEnabled(st in ("suit_tie", "suit_bow", "shirt_tie"))
+
+    def options(self):
+        men = self.cmb_gender.currentIndex() == 0
+        styles = ai.MEN_STYLES if men else ai.WOMEN_STYLES
+        return dict(crop=self.c_crop.isChecked(), zoom=self.sl_zoom.value() / 10, light=self.c_light.isChecked(),
+                    hd=self.c_hd.isChecked(), blemish=self.c_blem.isChecked(), bg=self.c_bg.isChecked(),
+                    bg_color=pc.BACKGROUNDS[self.cmb_bg.currentText()], clothes=self.c_clo.isChecked(),
+                    gender="men" if men else "women", style=styles.get(self.cmb_style.currentText(), "suit_tie"),
+                    jacket=ai.JACKET_COLORS[self.cmb_jacket.currentText()],
+                    shirt=ai.SHIRT_COLORS[self.cmb_shirt.currentText()], tie=ai.TIE_COLORS[self.cmb_tie.currentText()])
+
+    def _busy(self, on):
+        self.bar.setVisible(on)
+        for b in (self.btn_prev, self.btn_ok):
+            b.setEnabled(not on)
+
+    def _run(self, preview, after):
+        o, src, (w, h) = self.options(), self.item.current, (self.item.w, self.item.h)
+        self.lbl_note.setText("جارٍ المعالجة... (أول استخدام لإزالة الخلفية قد يحتاج تنزيل النموذج)")
+        self._busy(True)
+        self.worker = Worker(lambda: ai.process_photo(src, w, h, o, preview=preview))
+        self.worker.done.connect(after)
+        self.worker.start()
+
+    def preview(self):
+        self._run(True, self._on_preview)
+
+    def _on_preview(self, img, notes):
+        self._busy(False)
+        self.lbl_note.setText("\n".join(notes))
+        if img is not None:
+            pm = pil_to_qpixmap(img)
+            self.lbl_after.setPixmap(pm.scaled(330, 520, Qt.AspectRatioMode.KeepAspectRatio,
+                                               Qt.TransformationMode.SmoothTransformation))
+
+    def apply(self):
+        self._run(False, self._on_apply)
+
+    def _on_apply(self, img, notes):
+        self._busy(False)
+        if img is None:
+            self.lbl_note.setText("\n".join(notes))
+            return
+        self.result_img = img
+        self.accept()
+
+
 # ======================================================================= بطاقة الصورة
 class ItemCard(QFrame):
     changed = Signal()
@@ -443,12 +600,13 @@ class ItemCard(QFrame):
         top.addWidget(self.thumb)
 
         btns = QGridLayout()
-        btns.addWidget(make_button("🎨 تحسين الألوان", slot=self.enhance), 0, 0)
-        btns.addWidget(make_button("✂️ قص وميلان", slot=self.crop), 0, 1)
-        btns.addWidget(make_button("🖼️ لون الخلفية", slot=self.background), 1, 0)
-        btns.addWidget(make_button("↩️ استرجاع الأصل", slot=self.restore), 1, 1)
-        btns.addWidget(make_button("🔍 ضبط الحواف", slot=self.trim), 2, 1)
-        btns.addWidget(make_button("🗑️ حذف", "danger", lambda: self.removed.emit(self)), 2, 0)
+        btns.addWidget(make_button("✨ تحسين احترافي (ذكاء اصطناعي)", "primary", self.pro), 0, 0, 1, 2)
+        btns.addWidget(make_button("🎨 تحسين الألوان", slot=self.enhance), 1, 0)
+        btns.addWidget(make_button("✂️ قص وميلان", slot=self.crop), 1, 1)
+        btns.addWidget(make_button("🖼️ لون الخلفية", slot=self.background), 2, 0)
+        btns.addWidget(make_button("↩️ استرجاع الأصل", slot=self.restore), 2, 1)
+        btns.addWidget(make_button("🔍 ضبط الحواف", slot=self.trim), 3, 1)
+        btns.addWidget(make_button("🗑️ حذف", "danger", lambda: self.removed.emit(self)), 3, 0)
 
         lay = QVBoxLayout(self)
         lay.addWidget(name)
@@ -475,6 +633,11 @@ class ItemCard(QFrame):
         self.item.current = img
         self.refresh_thumb()
         self.changed.emit()
+
+    def pro(self):
+        d = ProDialog(self.item, self.window())
+        if d.exec() and d.result_img is not None:
+            self._done(d.result_img)
 
     def enhance(self):
         d = EnhanceDialog(self.item.current, self.window())
@@ -524,6 +687,12 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.refresh_preview)
 
         self._build_ui()
+        self._default_state = self.saveState()
+        st = QSettings("PhotoStudio", "PhotoStudio")      # استعادة آخر ترتيب للنوافذ
+        if st.value("geometry"):
+            self.restoreGeometry(st.value("geometry"))
+        if st.value("state"):
+            self.restoreState(st.value("state"))
         QTimer.singleShot(0, self.fit_page)
 
     # -------------------------------------------------------------- واجهة
@@ -639,19 +808,51 @@ class MainWindow(QMainWindow):
         dist.addWidget(self.rb_seq)
 
         self.cards_box = QVBoxLayout()
-        panel = QWidget()
-        pl = QVBoxLayout(panel)
-        pl.addWidget(g1)
-        pl.addWidget(g2)
-        pl.addLayout(prj)
-        pl.addLayout(dist)
-        pl.addLayout(self.cards_box)
-        pl.addStretch(1)
-        panel_scroll = QScrollArea()
-        panel_scroll.setWidgetResizable(True)
-        panel_scroll.setWidget(panel)
-        panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        panel_scroll.setFixedWidth(450)
+        settings_w = QWidget()
+        sl = QVBoxLayout(settings_w)
+        sl.addWidget(g1)
+        sl.addWidget(g2)
+        sl.addLayout(prj)
+        sl.addLayout(dist)
+        sl.addStretch(1)
+        items_w = QWidget()
+        il = QVBoxLayout(items_w)
+        il.addLayout(self.cards_box)
+        il.addStretch(1)
+
+        def scroller(widget):
+            sa = QScrollArea()
+            sa.setWidgetResizable(True)
+            sa.setWidget(widget)
+            sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            sa.setMinimumWidth(380)
+            return sa
+
+        # ---- نوافذ قابلة للسحب والتعويم وإعادة الترتيب (من شريط عنوان كل نافذة)
+        self.dock_settings = QDockWidget("⚙️ الإعدادات", self)
+        self.dock_settings.setObjectName("dock_settings")
+        self.dock_settings.setWidget(scroller(settings_w))
+        self.dock_items = QDockWidget("🖼️ الصور", self)
+        self.dock_items.setObjectName("dock_items")
+        self.dock_items.setWidget(scroller(items_w))
+        feats = (QDockWidget.DockWidgetFeature.DockWidgetMovable
+                 | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+                 | QDockWidget.DockWidgetFeature.DockWidgetClosable)
+        for dk in (self.dock_settings, self.dock_items):
+            dk.setFeatures(feats)
+        self.setDockNestingEnabled(True)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_settings)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_items)
+        self.splitDockWidget(self.dock_settings, self.dock_items, Qt.Orientation.Vertical)
+        self.resizeDocks([self.dock_settings, self.dock_items], [380, 460], Qt.Orientation.Vertical)
+
+        view_menu = self.menuBar().addMenu("عرض")
+        view_menu.addAction(self.dock_settings.toggleViewAction())
+        view_menu.addAction(self.dock_items.toggleViewAction())
+        view_menu.addSeparator()
+        act = QAction("إعادة ترتيب النوافذ للوضع الافتراضي", self)
+        act.triggered.connect(self.reset_layout)
+        view_menu.addAction(act)
 
         # ---- الشريط السفلي
         bottom = QHBoxLayout()
@@ -659,15 +860,23 @@ class MainWindow(QMainWindow):
         bottom.addWidget(make_button("📄 حفظ PDF عالي الجودة", "green", self.export_pdf))
         bottom.addWidget(make_button("🖼️ حفظ كصور PNG (600 DPI)", "blue", self.export_png))
 
-        top = QHBoxLayout()
-        top.addWidget(panel_scroll)       # أول عنصر = أقصى اليمين في الواجهة العربية
-        top.addLayout(left, 1)
         root = QVBoxLayout()
-        root.addLayout(top, 1)
+        root.addLayout(left, 1)
         root.addLayout(bottom)
         w = QWidget()
         w.setLayout(root)
         self.setCentralWidget(w)
+
+    def reset_layout(self):
+        self.restoreState(self._default_state)
+        self.dock_settings.show()
+        self.dock_items.show()
+
+    def closeEvent(self, e):
+        st = QSettings("PhotoStudio", "PhotoStudio")
+        st.setValue("geometry", self.saveGeometry())
+        st.setValue("state", self.saveState())
+        super().closeEvent(e)
 
     # -------------------------------------------------------------- إعدادات
     def settings_changed(self, *_):
@@ -899,12 +1108,39 @@ class MainWindow(QMainWindow):
 
 # ======================================================================= التشغيل
 def main():
+    if sys.platform == "win32":      # ليظهر شعار البرنامج في شريط المهام
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ziad.photostudio.app")
+        except Exception:
+            pass
     app = QApplication(sys.argv)
     app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
     app.setFont(QFont("Tahoma", 10))
+    if os.path.exists(resource("icon.png")):
+        app.setWindowIcon(QIcon(resource("icon.png")))
+
+    # ---- الواجهة الافتتاحية (شعار البرنامج)
+    splash = None
+    if os.path.exists(resource("logo.png")):
+        pm = QPixmap(resource("logo.png")).scaledToWidth(
+            680, Qt.TransformationMode.SmoothTransformation)
+        splash = QSplashScreen(pm, Qt.WindowType.WindowStaysOnTopHint
+                               | Qt.WindowType.FramelessWindowHint)
+        splash.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        splash.setStyleSheet("background: transparent;")
+        splash.show()
+        app.processEvents()
+
     app.setStyleSheet(DARK)
     win = MainWindow()
-    win.show()
+
+    def start():
+        win.show()
+        if splash:
+            splash.finish(win)
+
+    QTimer.singleShot(2500 if splash else 0, start)     # مدة ظهور الشعار: 2.5 ثانية
     sys.exit(app.exec())
 
 
