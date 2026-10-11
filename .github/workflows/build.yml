@@ -15,10 +15,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install PySide6 Pillow pyinstaller arabic-reshaper python-bidi
+        run: pip install PySide6 Pillow numpy opencv-python-headless onnxruntime pyinstaller arabic-reshaper python-bidi
 
       - name: Build EXE
-        run: pyinstaller --noconfirm --clean --onefile --windowed --collect-all arabic_reshaper --collect-all bidi --name PhotoStudio photo_studio.py
+        run: pyinstaller --noconfirm --clean --onefile --windowed --collect-all arabic_reshaper --collect-all bidi --collect-data cv2 --collect-all onnxruntime --icon app.ico --add-data "logo.png;." --add-data "icon.png;." --name PhotoStudio photo_studio.py
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
